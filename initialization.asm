@@ -4,7 +4,8 @@ __initialization_asm__ set 1
 
 
 include "hardware.inc"
-section         "game_code", ROM0
+; include "utility.asm"
+section         "__initialization_asm__", ROM0
 
 
 ; `void TurnOffTheScreen()`

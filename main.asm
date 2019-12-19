@@ -1,7 +1,7 @@
 include "hardware.inc"
-include "initialization.asm"
-include "utility.asm"
-include "graphics.asm"
+; include "initialization.asm"
+; include "utility.asm"
+; include "graphics.asm"
 
 
 ; This is literally the Header of the ROM and the entrypoint for the CPU into

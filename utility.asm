@@ -4,7 +4,7 @@ __utility_asm__ set 1
 
 
 
-
+section         "__utility_asm__", ROM0
 ; `void CopyDataFromInto()`
 ;
 ; Copy a Sprite into BG as Tile $80.

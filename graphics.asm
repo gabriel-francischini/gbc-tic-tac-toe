@@ -2,15 +2,17 @@
 if !def(__graphics_asm__)
 __graphics_asm__ set 1
 
+include "hardware.inc"
 
-section         "game_data", ROM0
+
+section         "__graphics_asm__", ROM0
 LittleRock:     
                 db      $FF, $00, $7E, $FF, $85, $81, $89, $83 
                 db      $93, $85, $A5, $8B, $C9, $97, $7E, $FF
 LittleRock_END:
 
 
-section         "game_code", ROM0
+section         "__graphics_asm__", ROM0
 ; `void LoadLittleRockIntoBGTilemap()`
 ;
 ; Copy a Sprite into BG as Tile $80.

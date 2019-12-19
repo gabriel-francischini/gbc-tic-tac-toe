@@ -1,17 +1,21 @@
-main.gb: main.obj
+OBJ=main.obj initialization.obj graphics.obj utility.obj
+
+main.gb: $(OBJ) hardware.inc
+	@echo "\n--> Linking file(s) $(OBJ) into ROM main.gb..."
+	rgblink -o main.gb -n main.sym $(OBJ)
+	@echo "\n--> Fixing header of the ROM main.gb..."
+	rgbfix -v -p 0 main.gb
+	@echo "\n--> Done."
 
 %.obj: %.asm
-	@echo "[1/3] Assembling file(s) $^ into $@..."
+	@echo "--> Assembling file(s) $^ into $@..."
 	rgbasm -E -o $@ $^
 
-%.gb: %.obj
-	@echo "\n[2/3] Linking file(s) $^ into ROM $@..."
-	rgblink -o $@ -n $*.sym $^
-	@echo "\n[3/3] Fixing header of the ROM $@..."
-	rgbfix -v -p 0 $@
-	@echo "\n[3/3] Done."
 
-.PHONY: clean
+.PHONY: clean clear
 
 clean:
-	rm *.obj *.sym *.gb
+	rm *.obj
+
+clear: clean
+	rm *.sym *.gb
