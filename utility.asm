@@ -73,6 +73,41 @@ RepeatByteIntoArray:
 
 
 
+; `void RepeatByteIntoArray()`
+;
+; Copy a byte value into an array. BC can be calculated by a EXCLUSIVE
+; subtractions of ADDRESSES.
+;
+; Params:
+; - `bc`: number of times to copy
+; - `d`: byte value to write
+; - `hl`: start (smallest) address of DESTINATION
+;
+; Destroys: `af`, `bc`,  `hl`
+RepeatByteIntoLongArray:
+
+;       To copy 0 bytes is the same as not copying anything
+                ld      a, b
+                or      c
+                jr      z, .Done
+
+;       .CopyOneMore is a
+;           do {
+;               *hl++ = d; // Copy a byte
+;               b--;
+;           } while(b > 0);
+.CopyOneMore:   ld      a, d            ; Copies 1 byte
+                ld      [hli], a        ; Points to next byte
+                dec     bc
+
+;       Checks if we copied enough bytes (b == 0)
+.WhileCheck:    ld      a, b
+                or      c
+                jr      nz, .CopyOneMore
+.Done:          ret
+
+
+
 
 ; End of the guard clause.
 endc ; __utility_asm__
