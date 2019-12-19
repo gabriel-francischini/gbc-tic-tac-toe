@@ -7,7 +7,8 @@ __utility_asm__ set 1
 section         "__utility_asm__", ROM0
 ; `void CopyDataFromInto()`
 ;
-; Copy a Sprite into BG as Tile $80.
+; Copy a array into another. B can be calculated by a EXCLUSIVE subtractions of
+; the ADDRESSES.
 ;
 ; Params:
 ; - `b`: number of bytes to copy
@@ -35,7 +36,8 @@ CopyShortDataFromInto:
 
 ; `void RepeatByteIntoArray()`
 ;
-; Copy a Sprite into BG as Tile $80.
+; Copy a byte value into an array. B can be calculated by a EXCLUSIVE
+; subtractions of ADDRESSES.
 ;
 ; Params:
 ; - `b`: number of times to copy
