@@ -44,7 +44,7 @@ LoadLittleRockIntoBGTilemap:
 ; pal_index bytes 0-7 is pal0, 8-15 is pal1, 16-23 is pal2, and so on
 ;
 ; - Destroys: `d`, `hl`
-ChangePaletteByte:
+ChangeBGPaletteByte:
                 ld      hl, rBCPS
 
                 ld      [hl], d     ; D is a index into the palette array

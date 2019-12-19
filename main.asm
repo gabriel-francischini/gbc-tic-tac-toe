@@ -55,19 +55,19 @@ Main:
 ;    Puts the correct palette that LittleRock uses
                 ld      bc, MainPalette + 0
                 ld      d, 0
-                call ChangePaletteByte
+                call ChangeBGPaletteByte
 
                 ld      bc, MainPalette + 2
                 ld      d, 2
-                call ChangePaletteByte
+                call ChangeBGPaletteByte
 
                 ld      bc, MainPalette + 4
                 ld      d, 4
-                call ChangePaletteByte
+                call ChangeBGPaletteByte
 
                 ld      bc, MainPalette + 6
                 ld      d, 6
-                call ChangePaletteByte
+                call ChangeBGPaletteByte
 
                 xor     a
                 ld      [rSCY], a
