@@ -47,15 +47,14 @@ LoadLittleRockIntoBGTilemap:
 ChangeBGPaletteByte:
                 ld      hl, rBCPS
 
+                
+                ld      a, d        ; Set the auto-increment bit to rBCPS
+                or      %10000000
+
                 ld      [hl], d     ; D is a index into the palette array
                 inc     hl          ; Points to rBCPD
                 ld      [hl], c     ; Writes the lowest byte of the color
-
-                inc     d           ; D should now point to the next byte
-
-                dec     hl          ; Points to rBCPS
-                ld      [hl], d
-                inc     hl          ; Points to rBCPD
+                                    ; rBCPS should auto increment to next byte
                 ld      [hl], b     ; Writes the highest byte of the color
 
                 ret
