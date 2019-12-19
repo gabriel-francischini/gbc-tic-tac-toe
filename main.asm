@@ -32,10 +32,11 @@ section         "game_code", ROM0
 Main:
 ;   There are a couple of things we need to do as we starts the ROM up:
 ;       1. Set up the global stack -- Already done for us by the Game Boy's
-;          bootstrap ROM. 
+;          bootstrap ROM. But better set it to RAM instead of HRAM.
 ;          See: https://gbdev.gg8.se/wiki/articles/Gameboy_Bootstrap_ROM#Contents_of_the_ROM
 ;       2. Disable the LCD screen and the audio, so we can config everything 
 ;          without external interference (PPU locking the VRAM, etc).
+                ld      sp, $d000                 ; Effectively starts @ $CFFF
                 call    EnsureCPUDoubledSpeed
                 call    TurnOffTheScreen
                 call    LoadLittleRockIntoBGTilemap
