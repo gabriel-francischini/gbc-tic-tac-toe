@@ -39,6 +39,7 @@ Main:
                 ld      sp, $d000                 ; Effectively starts @ $CFFF
                 call    EnsureCPUDoubledSpeed
                 call    TurnOffTheScreen
+                call    InitializeVRAM
                 call    LoadLittleRockIntoBGTilemap
 
 ;    Puts the LittleRock on the BG Scren
