@@ -17,6 +17,10 @@ section         "__utility_asm__", ROM0
 ;
 ; Destroys: `af`, `b`, `de`, `hl`
 CopyShortDataFromInto:
+;       To copy 0 bytes is the same as not copying anything
+                ld      a, b
+                jr      z, .Done
+
 ;       .CopyOneMore is a 
 ;           do {
 ;               *hl++ = *de++; // Copy a byte
@@ -46,6 +50,11 @@ CopyShortDataFromInto:
 ;
 ; Destroys: `af`, `b`,  `hl`
 RepeatByteIntoArray:
+
+;       To copy 0 bytes is the same as not copying anything
+                ld      a, b
+                jr      z, .Done
+
 ;       .CopyOneMore is a 
 ;           do {
 ;               *hl++ = d; // Copy a byte
