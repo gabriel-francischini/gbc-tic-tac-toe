@@ -33,6 +33,7 @@
 
 # Graphics
 *.png      binary
+*.ase      binary
 *.jpg      binary
 *.jpeg     binary
 *.gif      binary
@@ -57,6 +58,7 @@
 
 # Serialisation
 *.json     text
+*.gpl     text
 *.toml     text
 *.xml      text
 *.yaml     text
