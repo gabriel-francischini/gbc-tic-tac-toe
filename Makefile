@@ -1,4 +1,4 @@
-OBJ=main.obj initialization.obj graphics.obj utility.obj
+OBJ=main.obj initialization.obj graphics/graphics.obj utility.obj
 
 main.gb: $(OBJ) hardware.inc
 	@echo "\n--> Linking file(s) $(OBJ) into ROM main.gb..."
@@ -15,7 +15,7 @@ main.gb: $(OBJ) hardware.inc
 .PHONY: clean clear
 
 clean:
-	rm *.obj
+	@rm -fv *.obj $(OBJ)
 
 clear: clean
-	rm *.sym *.gb
+	@rm -fv *.sym *.gb

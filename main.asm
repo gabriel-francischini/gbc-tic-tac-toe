@@ -1,7 +1,7 @@
 include "hardware.inc"
 ; include "initialization.asm"
 ; include "utility.asm"
-; include "graphics.asm"
+; include "graphics/graphics.asm"
 
 
 ; This is literally the Header of the ROM and the entrypoint for the CPU into
@@ -10,7 +10,7 @@ section         "header", ROM0[$100]
 EntryPoint:     di                          ; Interrupts are messy right now
                 jp      Main
 
-;   Because this is the HEADER, we should reserve some bytes so the HEADER 
+;   Because this is the HEADER, we should reserve some bytes so the HEADER
 ;   could get fixed with the Nintendo's logo. Otherwise the resulting ROM
 ;   from this program would be considerated invalid/corrupted.
                 rept    $143 - $104
@@ -34,7 +34,7 @@ Main:
 ;       1. Set up the global stack -- Already done for us by the Game Boy's
 ;          bootstrap ROM. But better set it to RAM instead of HRAM.
 ;          See: https://gbdev.gg8.se/wiki/articles/Gameboy_Bootstrap_ROM#Contents_of_the_ROM
-;       2. Disable the LCD screen and the audio, so we can config everything 
+;       2. Disable the LCD screen and the audio, so we can config everything
 ;          without external interference (PPU locking the VRAM, etc).
                 ld      sp, $d000                 ; Effectively starts @ $CFFF
                 call    EnsureCPUDoubledSpeed
@@ -44,12 +44,12 @@ Main:
 
 ;    Puts the LittleRock on the BG Scren
 ;    Fills the 32*32 tilemap/screen in groups of 4 each
-                ld      b, 18        
+                ld      b, 18
                 ld      d, $01
                 ld      hl, _SCRN0 + 32 * 1 + 1
                 call    RepeatByteIntoArray
 
-                ld      b, 16        
+                ld      b, 16
                 ld      d, $01
                 ld      hl, _SCRN0 + 32 * 4 + 2
                 call    RepeatByteIntoArray
