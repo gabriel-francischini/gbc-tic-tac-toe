@@ -2,4 +2,5 @@
 *.obj
 *.sym
 *.o
+*.log
 
