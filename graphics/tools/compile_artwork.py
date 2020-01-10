@@ -4,7 +4,10 @@ import os
 import os.path
 import sys
 from PIL import Image
+from PIL import ImageOps
 from functools import reduce
+import itertools
+from tqdm import tqdm
 
 
 # This flag is setted whenever a function detects an ill-formed (but
@@ -15,11 +18,17 @@ compile_issue = False
 pngpath = ''
 x_start = 0
 y_start = 0
+script_name = sys.argv[0].rsplit('.', 1)[0]
+alpha_color = (240, 240, 232)
 
 def rgb2hex(r, g, b):
     def clamp(x):
         return max(0, min(x, 255))
     return "#{0:02x}{1:02x}{2:02x}".format(clamp(r), clamp(g), clamp(b))
+
+def sort_palette(palette):
+    return tuple(sorted(tuple(map(tuple, palette)),
+                        key=lambda x: -1 if x == alpha_color else sum(x)))
 
 def yield_image(pngpath):
     img = Image.open(pngpath)
@@ -49,13 +58,18 @@ def yield_tiledata(pngpath, img_loader=yield_image):
             y_start = y_start
             yield tiledata, tilecrop
 
-def yield_palettes(pngpath):
-    for tiledata, tilecrop in yield_tiledata(pngpath):
+def extract_palette(tiledata):
         palette = set()
 
         for x in range(8):
             for y in range(8):
                 palette.add(tiledata[x, y])
+
+        return sort_palette(tuple(palette))
+
+def yield_palettes(pngpath):
+    for tiledata, tilecrop in yield_tiledata(pngpath):
+        palette = extract_palette(tiledata)
 
         # The GBC (CGB) supports at maximum a 3+1 palette
         if len(palette) > 4:
@@ -73,7 +87,7 @@ def yield_palettes(pngpath):
                           f'{x_start}w,{y_start}h of file {pngpath} '
                           f'isn\'t in the 0RRRRRGG GGGBBBBB format.')
                     compile_issue = True
-        yield tuple(sorted(tuple(palette)))
+        yield sort_palette(palette)
 
 artfolder_path = None
 
@@ -119,7 +133,148 @@ for palette_a in list(palettes):
             palettes.remove(palette_a)
 
 
-palettes = list(palettes)
+palettes = list(map(sort_palette, palettes))
 palettes.sort(key=len)
-for palette in palettes:
-    print(sorted(list(map(lambda x: rgb2hex(*x), palette))))
+
+
+# We know should gather some data about palette usage in order to build the
+# final game's palette bank(s). We also will use this usage data to warn the
+# user about potential palette clashes or palette misuse.
+histogram = {}
+for pngpath in pngpaths:
+    for palette in yield_palettes(pngpath):
+        palette = set(palette)
+
+        for model_palette in palettes[::-1]:
+
+            # Pads the palette so we ALWAYS have 4 colors
+            while len(model_palette) < 4:
+                model_palette += (alpha_color, )
+
+            if palette <= set(model_palette):
+                histogram[model_palette] = (histogram.get(model_palette, [])
+                                            + [(pngpath, x_start, y_start)])
+                break
+
+
+histogram = sorted(histogram.items(), key=lambda x: len(x[-1]), reverse=True)
+final_palettes = [pal for pal, occurs in histogram]
+
+
+# Outputs a palette overview for the user AND a detailed description of the
+# palettes.
+with open(script_name + '.log', 'w') as logfile:
+    print('The following palettes were found:\n')
+    for index, (palette, occurs) in enumerate(histogram):
+        colors_str = ", ".join(map(lambda x: rgb2hex(*x), palette))
+        header_str = f'#{index}: {colors_str:<36} -- {len(occurs):>5} usages'
+        print(' ' * 4 + header_str)
+        logfile.write(header_str + '\n')
+
+        for (pngpath, x_start, y_start) in occurs:
+            logfile.write(' ' * 4
+                          + f'tile at {x_start:>3}w, {y_start:>3}h '
+                          f'of file {pngpath}\n')
+
+        logfile.write('\n\n\n')
+
+print('')
+
+
+# With all the usage data we finally can output a nice PNG art representing the
+# game's palette banks.
+del histogram
+
+palette_image = Image.new('RGB', (4, len(final_palettes)))
+palette_image_data = palette_image.load()
+for h in range(len(final_palettes)):
+    for w in range(4):
+        palette_image_data[w, h] = final_palettes[h][w]
+
+palette_image.save('palettes_overview_log.png')
+
+
+#
+# With all the palette analysis done, we finally can analyze the tiles.
+#
+
+def to_final_palette(palette):
+    for final_palette in final_palettes:
+        if set(palette) <= set(final_palette):
+            return final_palette
+
+def indexed_tiledata(tiledata, palette):
+    acc = []
+
+    for y in range(8):
+        for x in range(8):
+            acc += [palette.index(tiledata[x, y])]
+    return acc
+
+vflip = lambda x: ImageOps.flip(x)
+hflip = lambda x: ImageOps.mirror(x)
+dflip = lambda x: vflip(hflip(x))
+noflip = lambda x: x
+
+
+tiles = {}
+usual_tile_palette = {}
+
+print("Compressing tiles into tilemap, please wait...\n")
+for tiledata, tilecrop in tqdm(itertools.chain(*map(yield_tiledata, pngpaths))):
+    palette = extract_palette(tiledata)
+    palette = to_final_palette(palette)
+
+    final_tile_found = False
+    for indexed_final_tile in tiles.keys():
+        for mapper in [noflip, hflip, vflip, dflip]:
+            indexed_tile = tuple(indexed_tiledata(mapper(tilecrop).load(), palette))
+            if indexed_final_tile == indexed_tile:
+                tiles[indexed_final_tile] += 1
+                final_tile_found = True
+                break
+
+        if final_tile_found:
+            break
+
+    if not final_tile_found:
+        indexed_tile = tuple(indexed_tiledata(tiledata, palette))
+        tiles[indexed_tile] = tiles.get(indexed_tile, 0) + 1
+        usual_tile_palette[indexed_tile] = palette
+
+print("")
+print(f"We found {len(tiles.keys())} tiles, used across {sum(tiles.values())}"
+      " occurrences.")
+
+for k, v in sorted(list(tiles.items()), key=lambda x: x[::-1]):
+    # print(v)
+    k = list(k)
+    m = {0: ' ', 1: '▓', 2: '▒', 3:'░'}
+    for l in range(0, 64, 8):
+        pass
+    #     print("".join(map(lambda x: m[x], k[l:l+8])))
+    # print("*"*8)
+
+
+side = int(len(tiles)**0.5)+1
+tilemap_image = Image.new('RGB', (side * 8, side * 8))
+tilemap_data = tilemap_image.load()
+
+x = 0
+y = 0
+for tile, v in sorted(list(tiles.items()), key=lambda x: x[::-1], reverse=True):
+    palette = usual_tile_palette[tile]
+    color_guide = dict(enumerate(palette))
+
+    tile = [color_guide[x] for x in tile]
+
+    for h in range(8):
+        for w in range(8):
+            tilemap_data[x + w, y + h] = tile[h * 8 + w]
+
+    x += 8
+    if x >= (side * 8):
+        x -= (side * 8)
+        y += 8
+
+tilemap_image.save('tilemap_overview_log.png')
