@@ -105,8 +105,8 @@ for (dirpath, dirnames, filenames) in os.walk(artfolder_path):
     pngpaths = [os.path.join(artfolder_path, f)
                 for f in filenames
                 if f.lower().endswith('.png')]
+    pngpaths.sort()
     break
-
 
 palettes = set()
 
@@ -183,6 +183,7 @@ print('')
 
 # With all the usage data we finally can output a nice PNG art representing the
 # game's palette banks.
+palette_histogram = dict([(k, len(v)) for k, v in histogram])
 del histogram
 
 palette_image = Image.new('RGB', (4, len(final_palettes)))
@@ -218,63 +219,259 @@ noflip = lambda x: x
 
 
 tiles = {}
+tiles_order = {}
 usual_tile_palette = {}
 
+def to_final_tile(tilecrop, final_palette):
+    for indexed_final_tile in sorted(tiles.keys(),
+                                     key=lambda x: tiles[x],
+                                     reverse=True):
+        for mapper in [noflip, hflip, vflip, dflip]:
+            indexed_tile = tuple(indexed_tiledata(mapper(tilecrop).load(), final_palette))
+            if indexed_final_tile == indexed_tile:
+                return indexed_final_tile, mapper
+
+    return None, None
+
+
 print("Compressing tiles into tilemap, please wait...\n")
-for tiledata, tilecrop in tqdm(itertools.chain(*map(yield_tiledata, pngpaths))):
+tiles_seen = 0
+total = len([1 for x, y in itertools.chain(*map(yield_tiledata, pngpaths))])
+for tiledata, tilecrop in tqdm(itertools.chain(*map(yield_tiledata, pngpaths)),
+                               total=total):
     palette = extract_palette(tiledata)
     palette = to_final_palette(palette)
 
-    final_tile_found = False
-    for indexed_final_tile in tiles.keys():
-        for mapper in [noflip, hflip, vflip, dflip]:
-            indexed_tile = tuple(indexed_tiledata(mapper(tilecrop).load(), palette))
-            if indexed_final_tile == indexed_tile:
-                tiles[indexed_final_tile] += 1
-                final_tile_found = True
-                break
+    indexed_final_tile, fliptype = to_final_tile(tilecrop, palette)
 
-        if final_tile_found:
-            break
-
-    if not final_tile_found:
+    if indexed_final_tile is not None:
+        tiles[indexed_final_tile] += 1
+    else:
         indexed_tile = tuple(indexed_tiledata(tiledata, palette))
         tiles[indexed_tile] = tiles.get(indexed_tile, 0) + 1
         usual_tile_palette[indexed_tile] = palette
+        tiles_order[indexed_tile] = tiles_seen
+        tiles_seen += 1
 
 print("")
 print(f"We found {len(tiles.keys())} tiles, used across {sum(tiles.values())}"
       " occurrences.")
 
-for k, v in sorted(list(tiles.items()), key=lambda x: x[::-1]):
-    # print(v)
+
+def convert_tile_to_ascii(tile):
+    k = tile
     k = list(k)
-    m = {0: ' ', 1: '▓', 2: '▒', 3:'░'}
+    m2 = {0: ' ', 3: '▓', 2: '▒', 1:'░'}
+    m = {0: ' ', 3: 'M', 2: ':', 1:'.'}
+    tilestr = ""
     for l in range(0, 64, 8):
-        pass
-    #     print("".join(map(lambda x: m[x], k[l:l+8])))
-    # print("*"*8)
+         tilestr +=('\n'
+                    + "".join(map(lambda x: m[x], k[l:l+8]))
+                    + "."
+                    + "".join(map(lambda x: m2[x], k[l:l+8])))
+    return tilestr
 
 
-side = int(len(tiles)**0.5)+1
-tilemap_image = Image.new('RGB', (side * 8, side * 8))
-tilemap_data = tilemap_image.load()
+def output_tiles(tilelist, pngpath):
+    tiles = tilelist
+    side = int(len(tiles)**0.5)+1
+    tilemap_image = Image.new('RGB', (side * 8, side * 8))
+    tilemap_data = tilemap_image.load()
 
-x = 0
-y = 0
-for tile, v in sorted(list(tiles.items()), key=lambda x: x[::-1], reverse=True):
-    palette = usual_tile_palette[tile]
-    color_guide = dict(enumerate(palette))
+    x = 0
+    y = 0
+    for tile in tiles:
+        palette = usual_tile_palette[tile]
+        color_guide = dict(enumerate(palette))
 
-    tile = [color_guide[x] for x in tile]
+        tile = [color_guide[x] for x in tile]
 
-    for h in range(8):
-        for w in range(8):
-            tilemap_data[x + w, y + h] = tile[h * 8 + w]
+        for h in range(8):
+            for w in range(8):
+                tilemap_data[x + w, y + h] = tile[h * 8 + w]
 
-    x += 8
-    if x >= (side * 8):
-        x -= (side * 8)
-        y += 8
+        x += 8
+        if x >= (side * 8):
+            x -= (side * 8)
+            y += 8
 
-tilemap_image.save('tilemap_overview_log.png')
+    tilemap_image.save(pngpath)
+
+output_tiles(sorted(tiles.keys(), key=lambda x: tiles[x], reverse=True),
+             'tilemap_usage_order_log.png')
+
+output_tiles(sorted(tiles.keys(), key=lambda x: tiles_order[x]),
+             'tilemap_overview_log.png')
+
+asmfile = open(os.path.join(artfolder_path, 'compiled_artwork.asm'), 'w')
+
+def as_safe_str(part):
+    return ''.join([x if x.isalnum() else '_' for x in part]).strip()
+
+for part in artfolder_path.split('/')[::-1]:
+    part = as_safe_str(part)
+    length = len(''.join([x for x in part if x.isalnum()]).strip())
+
+    if length > 0:
+        prefix = part.strip()
+        break
+
+
+asmprint = lambda x: asmfile.write(x)
+
+asmprint(f'''; THIS FILE WAS AUTOGENERATED BY {script_name}
+; It should contain the graphic's data for folder {artfolder_path}
+; The unique prefix for these graphics is "{prefix}"
+
+
+section "__compiled_artwork__{prefix}__", ROM0
+
+
+CG_PaletteBank__{prefix}:
+''')
+
+indent = '''                '''
+
+fmt = '''
+
+;{indent}This palette #{number} occured in {occurs} tiles
+{palettelabel}:
+'''
+
+def palette_label(final_palette):
+    global prefix
+    number = final_palettes.index(final_palette)
+    return f'CG_Palette__{prefix}__{number}'
+
+fmtcolor = ''';{indent}HEX: {hexcolor} RGB: {r:>3} {g:>3} {b:>3}
+;{indent}    xBbBbBGgGgGRrRrR
+{indent} dw %0{bbin}{gbin}{rbin}
+
+'''
+for number, palette in enumerate(final_palettes):
+    palettelabel = palette_label(palette)
+    occurs = palette_histogram[palette]
+    asmprint(fmt.format(**locals()))
+
+    for r, g, b in palette:
+        hexcolor = rgb2hex(r, g, b).upper()
+        gbc_bin = lambda x: "{0:08b}".format(x)[:-3]
+        rbin = gbc_bin(r)
+        gbin = gbc_bin(g)
+        bbin = gbc_bin(b)
+
+        asmprint(fmtcolor.format(**locals()))
+
+
+def tile_label(indexed_tile):
+    global prefix
+    number = tiles_order[indexed_tile]
+    return f'CG_TILE__{prefix}__{number}'
+
+
+fmt = '''
+
+
+;{indent} TILE #{number} -- used {usage} times
+;
+{tileascii}
+{tilelabel}:
+;{indent}    abcdefgh,  ABCDEFGH
+'''
+fmtline = '''{indent} db %{lowerbyte}, %{higherbyte}
+'''
+for number, tile in enumerate(sorted(tiles.keys(),
+                                     key=lambda x: tiles_order[x])):
+    number = tiles_order[tile]
+    tilelabel = tile_label(tile)
+    usage = tiles[tile]
+    tileascii = (convert_tile_to_ascii(tile)
+                 .replace('\n',f'.\n;{indent}.')
+                 .lstrip()
+                 .lstrip(f'.\n{indent}') + '.')
+    asmprint(fmt.format(**locals()))
+
+    hb = {0: '0', 1: '0', 2: '1', 3: '1'}
+    lb = {0: '0', 1: '1', 2: '0', 3: '1'}
+
+    for l in range(0, 64, 8):
+        line = tile[l:l+8]
+        higherbyte = ''.join(map(lambda x: hb[x], line))
+        lowerbyte = ''.join(map(lambda x: lb[x], line))
+        asmprint(fmtline.format(**locals()))
+
+
+fmt = '''
+
+
+
+;{indent}Sprite of file {spritepath}
+;{indent}Size: {w}px x {h}px, or {tw} tiles x {th} tiles
+CG_SPRITE__{prefix}__{sprite_prefix}:
+.length:{length_indent} db {length}
+.size:
+.size_x:{size_indent} db {tw}
+.size_y:{size_indent} db {th}
+.tiledata:
+'''
+
+fmt_tile = '''.tile_x{xt_start:02}_y{yt_start:02}:{tileindent} dw {tilelabel}
+'''
+
+fmt_metadata_header = '''; Metadata for this tile, PPP=Palette n., B=bank, p=priority
+;{indent}   pVH0BPPP
+.metadata:
+'''
+
+fmt_tile_metadata = ('''.meta_x{xt_start:02}_y{yt_start:02}:'''
+                     '''{metaindent} db 0{flipmodebin}00{palettebin} ; {tile_desc:<23} on {tilelabel}
+''')
+
+str_tile = ''
+str_metadata = ''
+
+print("\nCompiling sprite data, please wait...\n")
+for spritepath in tqdm(pngpaths):
+    sprite_prefix = as_safe_str(os.path.splitext(os.path.basename(spritepath))[0])
+    img = yield_image(spritepath)
+    w, h = img.size
+    tw, th = w // 8, h // 8
+    length = tw * th
+    size_indent = ' ' * (len(indent) - len('.size_x:'))
+    tileindent = ' ' * (len(indent) - len('.tile_x00_y00:'))
+    metaindent = ' ' * (len(indent) - len('.meta_x00_y00:'))
+    length_indent = ' ' * (len(indent) - len('.length:'))
+
+    asmprint(fmt.format(**locals()))
+
+    for tiledata, tilecrop in yield_tiledata(spritepath):
+        palette = to_final_palette(extract_palette(tiledata))
+        final_tile, flipmode = to_final_tile(tilecrop, palette)
+
+        palettelabel = palette_label(palette)
+        tilelabel = tile_label(final_tile)
+
+        flipmapper = {noflip: '00', hflip: '01', vflip: '10', dflip: '11'}
+        flipstr = {noflip: 'no mirror', hflip: 'Mirror Horiz.',
+                   vflip: 'Mirror Vert.', dflip: 'Mirror H. & V.'}
+
+        flipmodebin = flipmapper[flipmode]
+        palette_num = final_palettes.index(palette)
+        palettebin = '{:03b}'.format(palette_num)
+
+        tile_desc = 'PAL #{}, {}'.format(palette_num, flipstr[flipmode])
+        xt_start = x_start // 8
+        yt_start = y_start // 8
+
+        str_tile += fmt_tile.format(**locals())
+        str_metadata += fmt_tile_metadata.format(**locals())
+
+
+    asmprint(str_tile)
+    asmprint(fmt_metadata_header.format(**locals()))
+    asmprint(str_metadata)
+
+    str_tile = ''
+    str_metadata = ''
+
+asmfile.close()
