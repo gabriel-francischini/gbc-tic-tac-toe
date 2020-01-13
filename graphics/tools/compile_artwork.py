@@ -408,7 +408,7 @@ fmt = '''
 ;{indent}Sprite of file {spritepath}
 ;{indent}Size: {w}px x {h}px, or {tw} tiles x {th} tiles
 CG_SPRITE__{prefix}__{sprite_prefix}:
-.length:{length_indent} db {length}
+.length:{length_indent} dw {length}
 .size:
 .size_x:{size_indent} db {tw}
 .size_y:{size_indent} db {th}
@@ -419,12 +419,12 @@ fmt_tile = '''.tile_x{xt_start:02}_y{yt_start:02}:{tileindent} dw {tilelabel}
 '''
 
 fmt_metadata_header = '''; Metadata for this tile, PPP=Palette n., B=bank, p=priority
-;{indent}   pVH0BPPP
+;{indent}    pVH0BPPP
 .metadata:
 '''
 
 fmt_tile_metadata = ('''.meta_x{xt_start:02}_y{yt_start:02}:'''
-                     '''{metaindent} db 0{flipmodebin}00{palettebin} ; {tile_desc:<23} on {tilelabel}
+                     '''{metaindent} db %0{flipmodebin}00{palettebin} ; {tile_desc:<23} on {tilelabel}
 ''')
 
 str_tile = ''
