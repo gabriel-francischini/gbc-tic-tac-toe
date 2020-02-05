@@ -1,7 +1,7 @@
 include "hardware.inc"
-; include "initialization.asm"
-; include "utility.asm"
-; include "graphics/graphics.asm"
+include "initialization.asm"
+include "utility.asm"
+include "graphics/graphics.asm"
 
 
 ; This is literally the Header of the ROM and the entrypoint for the CPU into
@@ -98,3 +98,5 @@ MainPalette:    dw %0111110000000000
                 dw %0111111111100000
                 dw %0000000000011111
                 dw %0000001111111111
+
+include "graphics/artwork/compiled_artwork.asm"

@@ -3,6 +3,7 @@ if !def(__graphics_asm__)
 __graphics_asm__ set 1
 
 include "hardware.inc"
+include "utility.asm"
 
 
 section         "__graphics_asm__", ROM0

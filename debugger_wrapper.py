@@ -1,22 +1,12 @@
 import time
 import curses
 from curses import wrapper
+import asyncio
+from asyncio.subprocess import PIPE
 import sys
-from subprocess import PIPE, Popen
-from threading  import Thread
-from queue import Queue, Empty
-
+import signal
 
 ON_POSIX = 'posix' in sys.builtin_module_names
-
-
-def enqueue_output(out, queue):
-    for line in iter(out.readline, b''):
-        queue.put(line)
-        print(line)
-        time.sleep(0.1)
-    out.close()
-
 
 full_block = '█'
 vline = '┃'
@@ -83,33 +73,47 @@ def main(stdscr):
 
 
 
+async def sameboy():
+    p = await asyncio.create_subprocess_shell('sameboy main.gb', stdin=PIPE, stdout=PIPE, bufsize=0, close_fds=ON_POSIX)
+    print(p.send_signal(signal.SIGINT))
+
+    print("Waiting to start...")
+    time.sleep(4)
 
 
+    # ... do other things here
 
-p = Popen(['sameboy', 'main.gb'], stdin=PIPE, stdout=PIPE, bufsize=0, close_fds=ON_POSIX)
-q = Queue()
-t = Thread(target=enqueue_output, args=(p.stdout, q))
-t.daemon = True # thread dies with the program
-t.start()
-
-# ... do other things here
-
-do_quit = False
-last_time = time.time()
-try:
-    while do_quit is False:
-        try:
-            # read line without blocking
-            line = q.get_nowait() # or q.get(timeout=.1)
-        except Empty:
-            if (time.time() - last_time) > 0.5:
-                last_time = time.time()
-                print('no output yet')
-                if p.poll() is None:
+    do_quit = False
+    last_time = time.time()
+    await p.stdin.drain()
+    print(p.stdin.write(b'\x03\nreg\n'))
+    await p.stdin.drain()
+    future_line = asyncio.create_task(p.stdout.readline())
+    try:
+        while do_quit is False:
+            # Wait for line
+            if not future_line.done():
+                if (time.time() - last_time) > 0.1:
+                    last_time = time.time()
+                    print('no output yet')
+                    await p.stdin.drain()
                     print(p.stdin.write(b'reg\n'))
-        else:
-            # got line
-            print(line.__repr__())
-            # ... do something with line
-finally:
-    p.kill()
+                    await p.stdin.drain()
+                    future_line.cancel()
+                    try:
+                        await future_line
+                    except asyncio.CancelledError:
+                        #print(await p.stdout.readline())
+                        future_line = asyncio.create_task(p.stdout.readline())
+            else:
+                # got line
+                line = future_line.result()
+                print(line.__repr__())
+                await p.stdin.drain()
+                print(p.stdin.write(b'reg\n'))
+                await p.stdin.drain()
+                future_line = asyncio.create_task(p.stdout.readline())
+    finally:
+        p.kill()
+
+asyncio.run(sameboy())

@@ -4,7 +4,7 @@ __initialization_asm__ set 1
 
 
 include "hardware.inc"
-; include "utility.asm"
+include "utility.asm"
 section         "__initialization_asm__", ROM0
 
 
