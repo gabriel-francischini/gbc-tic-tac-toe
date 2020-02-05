@@ -23,6 +23,10 @@ section         "header_cgb", ROM0[$143]
                 db      0
                 endr
 
+section         "minimum_stack", WRAM0[$CD00]
+StackMinTop:    ds $2FF
+StackMaxBottom:
+
 section         "game_code", ROM0
 ; `void main()`
 ;
@@ -36,10 +40,20 @@ Main:
 ;          See: https://gbdev.gg8.se/wiki/articles/Gameboy_Bootstrap_ROM#Contents_of_the_ROM
 ;       2. Disable the LCD screen and the audio, so we can config everything
 ;          without external interference (PPU locking the VRAM, etc).
-                ld      sp, $d000                 ; Effectively starts @ $CFFF
+
+;   Clears the space for the stack and sets it
+                ld      d, $00
+                ld      bc, StackMaxBottom - StackMinTop + 1
+                ld      hl, StackMinTop
+                call    RepeatByteIntoLongArray
+
+                ld      sp, $D000                 ; Effectively starts @ $CFFF
+
                 call    EnsureCPUDoubledSpeed
                 call    TurnOffTheScreen
                 call    InitializeVRAM
+                call    InitializeRAM
+                call    InitializeTileAddrArray
                 call    LoadLittleRockIntoBGTilemap
 
 ;    Puts the LittleRock on the BG Scren
@@ -55,21 +69,10 @@ Main:
                 call    RepeatByteIntoArray
 
 ;    Puts the correct palette that LittleRock uses
-                ld      bc, MainPalette + 0
-                ld      d, 0
-                call ChangeBGPaletteByte
-
-                ld      bc, MainPalette + 2
-                ld      d, 2
-                call ChangeBGPaletteByte
-
-                ld      bc, MainPalette + 4
-                ld      d, 4
-                call ChangeBGPaletteByte
-
-                ld      bc, MainPalette + 6
-                ld      d, 6
-                call ChangeBGPaletteByte
+                push    de
+                ld      de, CG_Palette__artwork__0
+                call    LoadBGPaletteBank
+                pop     de
 
                 xor     a
                 ld      [rSCY], a

@@ -169,6 +169,43 @@ EnsureCPUDoubledSpeed:
 
 
 
+; `void InitializeRAM()`
+;
+; Ensures that all the GBC RAM (all banks) is properly 0-ed before use
+; - Destroys: `bc`, `de`, `hl`
+InitializeRAM:
+;       Clears RAM "Bank 0" (i.e. fixed RAM)
+                ld      d, $00
+                ld      bc, StackMinTop - _RAM_B0 + 1   ; DO NOT CLEAR THE STACK!!
+                ld      hl, _RAM_B0
+                call    RepeatByteIntoLongArray
+
+;       Prepare for clearing the other banks
+                ld      e, 1
+                ld      a, e
+
+;       Changes to the E-th RAM bank (banks 1 through 7, inclusive)
+.oneMoreBank:
+                ldh     [rSVBK - $FF00], a
+                ld      hl, _RAM_BX
+                ld      bc, $DFFF - _RAM_BX + 1
+                call    RepeatByteIntoLongArray
+
+                inc     e
+                ld      a, e
+                cp      8
+                jr      c, .oneMoreBank
+
+;       Back to the #1 (0th and 1st) RAM BANK
+.ending:
+                xor     a
+                ldh     [rSVBK - $FF00], a
+
+                ret
+
+
+
+
 ; End of the guard clause.
 endc ; __initialization_asm__
 
