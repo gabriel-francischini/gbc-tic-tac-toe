@@ -159,10 +159,11 @@ InitializeVRAM:
 EnsureCPUDoubledSpeed:
                 ld      a, [rKEY1]
                 bit     7, a
-                jr      nc, .DoubleCGBSpeed
+                jr      nz, .DoubleCGBSpeed
 ;       To change the speed, it's just a matter of (re)setting the bit 0 at FF4D
 ;       (also known as KEY1).
 .SingleGBSpeed: or      $01
+                ld      [rKEY1], a
                 stop
 .DoubleCGBSpeed ret
 
