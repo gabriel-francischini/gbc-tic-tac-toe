@@ -9,7 +9,8 @@ extern "C" {
 #include <unistd.h>
 #include <errno.h>
 #include <sys/mman.h>
-
+#include <pty.h>
+#include <signal.h>
 
 
     // see: https://stackoverflow.com/questions/5656530
@@ -37,6 +38,8 @@ extern "C" {
 #include <fstream>
 #include <ext/stdio_filebuf.h>
 #include <functional>
+#include <chrono>
+#include <string>
 
 
 // Standin for C's File Descriptors. Think of them of a kind of ID.
@@ -64,23 +67,24 @@ private:
 public:
 
     Pipe(){
-        OpenPipeError error = pipe(this->_fds);
+        OpenPipeError error = openpty(&this->_fds[1], &this->_fds[0],
+                                      nullptr, nullptr, nullptr);
         if(error != NoOpenPipeErrors)
             throw std::system_error(error, std::system_category(),
                                     "Couldn't open a pipe");
 
 
-        const_cast<libc::FileStream&>(this->in()) = fdopen(this->fd_in(), "w");
-        if(this->in() == nullptr)
+        const_cast<libc::FileStream&>(this->master()) = fdopen(this->fd_master(), "w");
+        if(this->master() == nullptr)
             throw std::system_error(errno, std::system_category(),
                                     "Couldn't open a pipe's input C stream");
-        this->fb_in() = gnu::filebuf(this->in(), std::ios_base::out);
+        this->fb_master() = gnu::filebuf(this->master(), std::ios_base::out);
 
-        const_cast<libc::FileStream&>(this->out()) = fdopen(this->fd_out(), "r");
-        if(this->in() == nullptr)
+        const_cast<libc::FileStream&>(this->slave()) = fdopen(this->fd_slave(), "r");
+        if(this->master() == nullptr)
             throw std::system_error(errno, std::system_category(),
                                     "Couldn't open a pipe's output C stream");
-        this->fb_out() = gnu::filebuf(this->out(), std::ios_base::in);
+        this->fb_slave() = gnu::filebuf(this->slave(), std::ios_base::in);
 
     }
 
@@ -104,14 +108,14 @@ public:
     // FileDescriptors serves as IDs, so they kind of *never will* be modified.
     // However, since they *will* interact with C functions their constness will
     // often be dropped, although they'll never change their value.
-    const FileDescriptor& fd_in() const {return this->_fds[1];}
-    const FileDescriptor& fd_out() const {return this->_fds[0];}
+    const FileDescriptor& fd_master() const {return this->_fds[1];}
+    const FileDescriptor& fd_slave() const {return this->_fds[0];}
 
-    libc::FileStream const& in() const {return this->_filestreams[1];}
-    libc::FileStream const& out() const {return this->_filestreams[0];}
+    libc::FileStream const& master() const {return this->_filestreams[1];}
+    libc::FileStream const& slave() const {return this->_filestreams[0];}
 
-    gnu::filebuf& fb_in() {return this->_fbs[1];}
-    gnu::filebuf& fb_out() {return this->_fbs[0];}
+    gnu::filebuf& fb_master() {return this->_fbs[1];}
+    gnu::filebuf& fb_slave() {return this->_fbs[0];}
 
 };
 
@@ -152,17 +156,16 @@ public:
 
         if(this->child_pid == static_cast<pid_t>(0)){
             // We are in the child subprocess!
-            dup2(main2sub.fd_out(), STDIN_FILENO);
-            dup2(sub2main.fd_in(), STDOUT_FILENO);
+            dup2(main2sub.fd_slave(), STDIN_FILENO);
+            dup2(sub2main.fd_master(), STDOUT_FILENO);
 
             child_function();
 
             sub2main.close();
             main2sub.close();
 
-            // FLUSH!! Or else we could lose some output right before the
-            // subprocess/child terminates
-            fflush(nullptr);
+            // On pseudo terminals there is no need to flush before exiting.
+            // fflush(nullptr);
 
             *this->is_child_running = false;
         } else if (child_pid < static_cast<pid_t>(0)){
@@ -189,7 +192,7 @@ public:
        overflow(ch).
     **/
     char sputc(char& ch){
-        return static_cast<char>(this->main2sub.fb_in().sputc(ch));
+        return static_cast<char>(this->main2sub.fb_master().sputc(ch));
     }
 
     /**! Writes count characters to the output sequence from the character array
@@ -198,7 +201,7 @@ public:
        are written or a call to sputc() would have returned Traits::eof().
     **/
     std::streamsize sputn( const char* s, std::streamsize count){
-        return this->main2sub.fb_in().sputn(s, count);
+        return this->main2sub.fb_master().sputn(s, count);
     }
 
 
@@ -207,18 +210,18 @@ public:
     // The following are functions for the GET (i.e. READ, COUT) area
 
     //! obtains the number of characters immediately available in the get area
-    auto in_avail(){return this->sub2main.fb_out().in_avail();}
+    auto in_avail(){return this->sub2main.fb_slave().in_avail();}
 
     //! reads one character from the input sequence and advances the sequence
     char sbumpc(){
-        return static_cast<char>(this->sub2main.fb_out().sbumpc());
+        return static_cast<char>(this->sub2main.fb_slave().sbumpc());
     }
 
     /**! reads one character from the input sequence without advancing the
        sequence
     **/
     char sgetc(){
-        return static_cast<char>(this->sub2main.fb_out().sgetc());
+        return static_cast<char>(this->sub2main.fb_slave().sgetc());
     }
 
     /**! Reads count characters from the input sequence and stores them into a
@@ -228,17 +231,21 @@ public:
        Traits::eof() is returned.
     **/
     std::streamsize sgetn(char* s, std::streamsize count){
-        return this->sub2main.fb_out().sgetn(s, count);
+        return this->sub2main.fb_slave().sgetn(s, count);
     }
 
 
 
 
     ~ProcessIOWrapper(){
+        *this->is_child_running = false;
+
         // Removes the shared memory at is_child_running
         munmap(this->is_child_running, sizeof(bool));
     }
 };
+
+namespace chrono = std::chrono;
 
 int main(void){
 
@@ -246,12 +253,15 @@ int main(void){
     // at best it can only read. It's has a COPY-ON-WRITE scheme.
     auto child = [](){
         printf("This is the subprocess\n speaking to the main process! Or\n is it?");
-        printf(" More text from\n the sub, bro.");
+        printf(" More text from\n the sub, bro.\n");
 
+        execlp("sameboy", "sameboy", "main.gb", nullptr);
     };
 
     ProcessIOWrapper pIOW(child);
+    bool has_activated_debugger = false;
 
+    chrono::steady_clock::time_point last_time = chrono::steady_clock::now();
     while((pIOW.is_running() == true) || (pIOW.in_avail() > 0)){
         unsigned int in_avail = pIOW.in_avail();
         if(in_avail != 0){
@@ -262,5 +272,18 @@ int main(void){
                 std::cout << pIOW.sbumpc();
             std::cout << "\".\n";
         }
+
+        if(chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - last_time).count() >= 500){
+            std::cout << "oitime is " << chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - last_time).count() << std::endl;
+
+            std::string text = "reg\n\r\n";
+            pIOW.sputn(text.c_str(), text.length());
+
+            last_time = chrono::steady_clock::now();
+        }
     }
+
+
+    // SIGINT child to close it
+    kill(pIOW.pid(), 2);
 }
