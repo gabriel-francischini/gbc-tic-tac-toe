@@ -40,6 +40,7 @@ extern "C" {
 #include <functional>
 #include <chrono>
 #include <string>
+#include <regex>
 
 
 // Standin for C's File Descriptors. Think of them of a kind of ID.
@@ -74,11 +75,11 @@ public:
                                     "Couldn't open a pipe");
 
 
-        const_cast<libc::FileStream&>(this->master()) = fdopen(this->fd_master(), "w");
+        const_cast<libc::FileStream&>(this->master()) = fdopen(this->fd_master(), "r");
         if(this->master() == nullptr)
             throw std::system_error(errno, std::system_category(),
                                     "Couldn't open a pipe's input C stream");
-        this->fb_master() = gnu::filebuf(this->master(), std::ios_base::out);
+        this->fb_master() = gnu::filebuf(this->master(), std::ios_base::in);
 
         const_cast<libc::FileStream&>(this->slave()) = fdopen(this->fd_slave(), "r");
         if(this->master() == nullptr)
@@ -121,14 +122,13 @@ public:
 
 class ProcessIOWrapper {
 public:
-private:
-
     // Pipes main-out into sub-stdin
     Pipe main2sub;
 
     // Pipes sub-stdout into main-in
     Pipe sub2main;
 
+private:
     pid_t child_pid;
     bool* is_child_running;
 
@@ -156,8 +156,9 @@ public:
 
         if(this->child_pid == static_cast<pid_t>(0)){
             // We are in the child subprocess!
-            dup2(main2sub.fd_slave(), STDIN_FILENO);
-            dup2(sub2main.fd_master(), STDOUT_FILENO);
+            dup2(sub2main.fd_slave(), STDIN_FILENO);
+            dup2(sub2main.fd_slave(), STDOUT_FILENO);
+            dup2(sub2main.fd_slave(), STDERR_FILENO);
 
             child_function();
 
@@ -210,18 +211,18 @@ public:
     // The following are functions for the GET (i.e. READ, COUT) area
 
     //! obtains the number of characters immediately available in the get area
-    auto in_avail(){return this->sub2main.fb_slave().in_avail();}
+    auto in_avail(){return this->sub2main.fb_master().in_avail();}
 
     //! reads one character from the input sequence and advances the sequence
     char sbumpc(){
-        return static_cast<char>(this->sub2main.fb_slave().sbumpc());
+        return static_cast<char>(this->sub2main.fb_master().sbumpc());
     }
 
     /**! reads one character from the input sequence without advancing the
        sequence
     **/
     char sgetc(){
-        return static_cast<char>(this->sub2main.fb_slave().sgetc());
+        return static_cast<char>(this->sub2main.fb_master().sgetc());
     }
 
     /**! Reads count characters from the input sequence and stores them into a
@@ -231,7 +232,7 @@ public:
        Traits::eof() is returned.
     **/
     std::streamsize sgetn(char* s, std::streamsize count){
-        return this->sub2main.fb_slave().sgetn(s, count);
+        return this->sub2main.fb_master().sgetn(s, count);
     }
 
 
@@ -252,8 +253,8 @@ int main(void){
     // ALWAYS REMEMBER: The child process can't write the parent's memory,
     // at best it can only read. It's has a COPY-ON-WRITE scheme.
     auto child = [](){
-        printf("This is the subprocess\n speaking to the main process! Or\n is it?");
-        printf(" More text from\n the sub, bro.\n");
+        // printf("This is the subprocess\n speaking to the main process! Or\n is it?");
+        // printf(" More text from\n the sub, bro.\n");
 
         execlp("sameboy", "sameboy", "main.gb", nullptr);
     };
@@ -262,28 +263,61 @@ int main(void){
     bool has_activated_debugger = false;
 
     chrono::steady_clock::time_point last_time = chrono::steady_clock::now();
-    while((pIOW.is_running() == true) || (pIOW.in_avail() > 0)){
-        unsigned int in_avail = pIOW.in_avail();
-        if(in_avail != 0){
-            std::cout << "# of chars: " << in_avail
-                      << ", chars:\"";
 
-            for(unsigned int i=0; i<in_avail; i++)
-                std::cout << pIOW.sbumpc();
-            std::cout << "\".\n";
+    std::string line = "";
+    bool new_line = false;
+    bool debugger_started = false;
+
+
+    while((pIOW.is_running() == true) || (pIOW.in_avail() > 0)){
+
+        if(pIOW.in_avail() != 0){
+            for(unsigned int i=0; i<pIOW.in_avail(); i++){
+                char ch = pIOW.sbumpc();
+
+                if(ch == '\n'){
+                    new_line = true;
+                    break;
+                } else if(ch != '\r'){
+                    line.push_back(ch);
+                }
+            }
+        }
+
+        if(new_line){
+
+            // Fires up the debugger as soon as the SameBoy starts
+            if(std::regex_search(line, std::regex(R"(^SameBoy v[0-9]+\.[0-9]+\.[0-9]+)"))){
+                std::string text = "reg\n\r\n";
+                write(pIOW.sub2main.fd_master(), text.c_str(), text.length());
+            }
+
+            if(!debugger_started && std::regex_search(line, std::regex(R"(^AF = \$[0-9A-F]+)"))){
+                std::cout << "We are gonna TRAP this!" << std::endl;
+                kill(pIOW.pid(), 2);
+                debugger_started = true;
+            }
+
+
+            std::cout << "number of chars: " << line.length()
+                      << ", chars:\"" << line.c_str();
+            std::cout << "\"." << std::endl;
         }
 
         if(chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - last_time).count() >= 500){
-            std::cout << "oitime is " << chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - last_time).count() << std::endl;
-
-            std::string text = "reg\n\r\n";
-            pIOW.sputn(text.c_str(), text.length());
-
             last_time = chrono::steady_clock::now();
+
+            std::string text = "step\n";
+            write(pIOW.sub2main.fd_master(), text.c_str(), text.length());
+        }
+
+        if(new_line){
+            line.clear();
+            new_line = false;
         }
     }
 
 
     // SIGINT child to close it
-    kill(pIOW.pid(), 2);
+    kill(pIOW.pid(), SIGINT);
 }
