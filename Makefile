@@ -23,7 +23,7 @@ main.obj: hardware.inc $(ASM) debugger_wrapper
 
 debugger_wrapper: debugger_wrapper.cpp
 	@echo "\n--> Compiling the debugger wrapper utility from $^..."
-	g++ -std=c++1z -g -v -o $@ $^ -lutil
+	g++ -std=c++1z -g -v -o $@ $^ -lutil -lncurses
 
 .PHONY: clean clear
 

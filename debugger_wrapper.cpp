@@ -41,7 +41,8 @@ extern "C" {
 #include <chrono>
 #include <string>
 #include <regex>
-
+#include <tuple>
+#include <algorithm>
 
 // Standin for C's File Descriptors. Think of them of a kind of ID.
 using FileDescriptor = int;
@@ -122,11 +123,12 @@ public:
 
 class ProcessIOWrapper {
 public:
+    // those variable are MUTABLE because of C's weird const-correctness
     // Pipes main-out into sub-stdin
-    Pipe main2sub;
+    mutable Pipe main2sub;
 
     // Pipes sub-stdout into main-in
-    Pipe sub2main;
+    mutable Pipe sub2main;
 
 private:
     pid_t child_pid;
@@ -211,7 +213,7 @@ public:
     // The following are functions for the GET (i.e. READ, COUT) area
 
     //! obtains the number of characters immediately available in the get area
-    auto in_avail(){return this->sub2main.fb_master().in_avail();}
+    auto in_avail() const {return this->sub2main.fb_master().in_avail();}
 
     //! reads one character from the input sequence and advances the sequence
     char sbumpc(){
@@ -248,76 +250,427 @@ public:
 
 namespace chrono = std::chrono;
 
-int main(void){
 
+// Some hex manipulating primitives.
+// see: https://stackoverflow.com/questions/13490977/convert-hex-stdstring-to-unsigned-char
+
+inline int char2hex(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    throw std::runtime_error("wrong char");
+}
+
+std::vector<unsigned char> str2hex(const std::string& hexStr) {
+    std::vector<unsigned char> retVal;
+    bool highPart = ((hexStr.length() % 2) == 0);
+    // for odd number of characters - we add an extra 0 for the first one:
+    if (!highPart)
+        retVal.push_back(0);
+    std::for_each(hexStr.begin(), hexStr.end(),
+                  [&](char nextChar) {
+                      if (highPart)
+                          // this is first char for the given hex number:
+                          retVal.push_back(0x10 * char2hex(nextChar));
+                      else
+                          // this is the second char for the given hex number
+                          retVal.back() += char2hex(nextChar);
+                      highPart = !highPart;
+                  }
+                  );
+
+    return retVal;
+}
+
+
+class Debugger {
     // ALWAYS REMEMBER: The child process can't write the parent's memory,
     // at best it can only read. It's has a COPY-ON-WRITE scheme.
-    auto child = [](){
+    constexpr static auto child = [](){
         // printf("This is the subprocess\n speaking to the main process! Or\n is it?");
         // printf(" More text from\n the sub, bro.\n");
 
         execlp("sameboy", "sameboy", "main.gb", nullptr);
     };
 
-    ProcessIOWrapper pIOW(child);
-    bool has_activated_debugger = false;
+public:
+    ProcessIOWrapper pIOW;
+    bool debug;
 
-    chrono::steady_clock::time_point last_time = chrono::steady_clock::now();
+    // Registers of the Game Boy Color
+    enum GBReg {
+        A=0, F,
+        B, C,
+        H, L,
+        SP0, SP1,
+        PC0, PC1,
+        GBRegNUM
+    };
 
-    std::string line = "";
-    bool new_line = false;
-    bool debugger_started = false;
+    unsigned char registers[GBRegNUM];
+    unsigned short mem_watch;
+    std::vector<std::string> register_log;
+    std::vector<std::string> mem_log;
+    std::vector<std::string> code_log;
 
+    // It's called Write so it doesn't clashes with C's write()
+    void Write(std::string text){
+        write(this->pIOW.sub2main.fd_master(), text.c_str(), text.length());
+    }
 
-    while((pIOW.is_running() == true) || (pIOW.in_avail() > 0)){
+    const bool should_refresh() const {
+        return (pIOW.in_avail() > 0);
+    }
 
-        if(pIOW.in_avail() != 0){
-            for(unsigned int i=0; i<pIOW.in_avail(); i++){
-                char ch = pIOW.sbumpc();
+    void process_input(){
+        bool new_line = false;
 
-                if(ch == '\n'){
-                    new_line = true;
-                    break;
-                } else if(ch != '\r'){
-                    line.push_back(ch);
+        if(this->should_refresh()){
+            if(pIOW.in_avail() > 0){
+                for(unsigned int i=0; i<pIOW.in_avail(); i++){
+                    char ch = pIOW.sbumpc();
+
+                    if(ch == '\n'){
+                        new_line = true;
+                        break;
+                    } else if(ch != '\r'){
+                        this->line.push_back(ch);
+                    }
                 }
             }
-        }
 
-        if(new_line){
+            if(new_line){
+                // Fires up the debugger as soon as the SameBoy starts
+                if(!this->has_activated_debugger && std::regex_search(line, std::regex(R"(^AF = \$[0-9A-F]+)"))){
+                    if(this->debug)
+                        std::cout << "We are gonna TRAP this!" << std::endl;
 
-            // Fires up the debugger as soon as the SameBoy starts
-            if(std::regex_search(line, std::regex(R"(^SameBoy v[0-9]+\.[0-9]+\.[0-9]+)"))){
-                std::string text = "reg\n\r\n";
-                write(pIOW.sub2main.fd_master(), text.c_str(), text.length());
+                    kill(pIOW.pid(), 2);
+                    this->has_activated_debugger = true;
+                }
+
+                for(const auto& [regex_str, then_part] : this->line_regexes){
+                    if(std::regex_search(line, std::regex(regex_str)))
+                        then_part(line);
+                }
+
+                if(this->recording_log)
+                    this->temp_log.push_back(std::string(line));
+
+                if(this->debug && !std::regex_search(line, std::regex(R"(^[0-9a-fA-F]+\:)"))){
+                    std::cout << "number of chars: " << line.length()
+                              << ", chars: \"" << line.c_str();
+                    std::cout << "\"" << std::endl;
+                }
             }
 
-            if(!debugger_started && std::regex_search(line, std::regex(R"(^AF = \$[0-9A-F]+)"))){
-                std::cout << "We are gonna TRAP this!" << std::endl;
-                kill(pIOW.pid(), 2);
-                debugger_started = true;
+            // Clears new_line so next time we scan the terminal everything is
+            // alright
+            if(new_line){
+                this->line.clear();
+                new_line = false;
             }
 
-
-            std::cout << "number of chars: " << line.length()
-                      << ", chars:\"" << line.c_str();
-            std::cout << "\"." << std::endl;
-        }
-
-        if(chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - last_time).count() >= 500){
-            last_time = chrono::steady_clock::now();
-
-            std::string text = "step\n";
-            write(pIOW.sub2main.fd_master(), text.c_str(), text.length());
-        }
-
-        if(new_line){
-            line.clear();
-            new_line = false;
+            if(this->should_refresh()){
+                // Still things to process!
+                this->process_input();
+            }
         }
     }
 
+    void refresh(){
+        register_log = result_of("registers\n");
+        process_input();
 
-    // SIGINT child to close it
-    kill(pIOW.pid(), SIGINT);
+        bool deb = this->debug;
+        this->debug = false;
+        mem_log = result_of("examine/1024 " + std::to_string(this->mem_watch) + "\n");
+        process_input();
+
+        this->debug = deb;
+
+        code_log = result_of("disassemble/20\n");
+        process_input();
+    }
+
+    std::vector<std::string> result_of(const std::string& str){
+        do {
+            process_input();
+        } while(should_refresh());
+
+        this->temp_log.clear();
+        this->recording_log = true;
+
+        Write(str);
+
+        do {
+            process_input();
+        } while(this->should_refresh() || temp_log.size() < 2);
+
+        this->recording_log = false;
+
+        if (temp_log.size() >= 1)
+            temp_log.erase(temp_log.begin());
+
+        return temp_log;
+    }
+
+
+    using LineIf = const char* const;
+    using LineThen = std::function<void (const std::string&)>;
+    using RegexSignature = std::tuple<LineIf, LineThen>;
+
+    void add_regex(const LineIf& line_if, const LineThen& line_then){
+        line_regexes.push_back(std::tuple<LineIf, LineThen>(line_if, line_then));
+    }
+private:
+    bool has_activated_debugger;
+    std::string line;
+    std::vector<RegexSignature> line_regexes;
+    std::vector<std::string> temp_log;
+    bool recording_log;
+
+
+public:
+    Debugger() :
+        pIOW(child),
+        debug(false),
+        registers(),
+        mem_watch(0),
+
+        has_activated_debugger(false),
+        line(),
+        line_regexes(),
+        recording_log(false) {
+
+        // A quick REG-ing demo to show that SameBoy is actually working.
+        // This is necessary because SameBoy takes a while to fire up.
+        add_regex(R"(^SameBoy v[0-9]+\.[0-9]+\.[0-9]+)",
+                  [this](std::string){
+                      this->Write("registers\n");
+                  });
+    }
+
+    ~Debugger(){
+        // SIGINT child to close it
+        kill(pIOW.pid(), SIGINT);
+
+        kill(pIOW.pid(), SIGTERM);
+
+        kill(pIOW.pid(), SIGKILL);
+    }
+public:
+};
+
+extern "C" {
+#include <curses.h>
+}
+
+class SafeNCursesInit {
+public:
+    SafeNCursesInit(){
+        initscr();
+        cbreak();
+        noecho();
+        nodelay(stdscr, TRUE);
+        keypad(stdscr, TRUE);
+        clear();
+    }
+
+    ~SafeNCursesInit(){
+        endwin();
+    }
+};
+
+
+int main(void){
+
+    constexpr bool ncurses = true;
+
+    if (ncurses){
+        Debugger debugger;
+        debugger.debug = !ncurses;
+
+        SafeNCursesInit ncurses_safeguard = SafeNCursesInit();
+
+        std::string line = "";
+        bool refresh_needed = true;
+
+        while(debugger.pIOW.is_running() || debugger.should_refresh()){
+            debugger.process_input();
+
+            int ch = getch();
+
+            if (ch != ERR){
+                bool ok = true;
+                for(char black_list : {'\n', '\r'})
+                    ok = ok && (ch != black_list);
+
+                ok = ok && (' ' <= ch) && (ch <= '~');
+
+                if(ok)
+                    line.push_back(ch);
+
+                if(ch == KEY_UP) debugger.mem_watch -= 16;
+                if(ch == KEY_PPAGE) debugger.mem_watch -= 16*16;
+                if(ch == KEY_HOME) debugger.mem_watch -= 16*16*16;
+
+                if(ch == KEY_DOWN) debugger.mem_watch += 16;
+                if(ch == KEY_NPAGE) debugger.mem_watch += 16*16;
+                if(ch == KEY_END) debugger.mem_watch += 16*16*16;
+
+                if(ch == KEY_BACKSPACE) line.pop_back();
+                if((ch == KEY_ENTER) || (ch == '\n')){
+                    if(line[0] != ':'){
+                        line.push_back('\n');
+                        debugger.Write(line);
+                        line.clear();
+                    } else {
+                        line.clear();
+                    }
+                }
+
+                refresh_needed = true;
+                debugger.refresh();
+                debugger.process_input();
+            }
+
+            if (refresh_needed){
+                clear();
+
+                int max_h, max_w;
+                getmaxyx(stdscr, max_h, max_w);
+
+                auto draw_hline = [](int y, int x, int max, int ch=' ' | A_REVERSE){
+                    move(y, x);
+                    for(int i=0; i<max;i++)
+                        addch(ch);
+                };
+
+                auto draw_vline = [](int y, int x, int max, int ch=' ' | A_REVERSE){
+                    for(int i=0; i<max;i++){
+                        move(y + i, x);
+                        addch(ch);
+                    }
+                };
+
+                // Horizontal Lines
+                draw_hline(0, 0, max_w);
+                draw_hline((max_h - 2) / 2, 0, max_w);
+                draw_hline(max_h - 2, 0, max_w);
+
+                draw_vline(0, max_w/2, max_h-2);
+
+                // Writes the mem portion:
+                move(2, 0);
+                if(debugger.mem_log.size() > 0){
+                    for(int i=0;
+                        i < std::min(debugger.mem_log.size(),
+                                     static_cast<size_t>(((max_h-2)/2)-2));
+                        i++){
+                        move(2 + i, 0);
+
+                        bool add_underline = (((debugger.mem_watch/16)+i+1) % 4) == 0;
+
+                        if(add_underline) attron(A_UNDERLINE | WA_TOP);
+                        addstr(debugger.mem_log[i].c_str());
+                        if(add_underline) attroff(A_UNDERLINE | WA_TOP);
+                    }
+
+                    move(1, 0);
+                    attron(A_UNDERLINE);
+                    addstr("ADDR:  0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F");
+                    attroff(A_UNDERLINE);
+                    for (int vrule : {5, 17, 29, 41, 53})
+                        draw_vline(1, vrule, ((max_h-2)/2)-1, ACS_VLINE | A_BOLD);
+
+
+                } else {
+                    move(1,0);
+                    addstr("No memstring!");
+                }
+
+
+                // Registers part
+                move(1, (max_w/2)+1);
+                if(debugger.register_log.size() > 0){
+                    for(int i=0;
+                        i < std::min(debugger.register_log.size(),
+                                     static_cast<size_t>(((max_h-2)/2)-2));
+                        i++){
+                        move(1 + i, (max_w/2)+1);
+
+                        //bool add_underline = (((debugger.mem_watch/16)+i+1) % 4) == 0;
+
+                        //if(add_underline) attron(A_UNDERLINE | WA_TOP);
+                        addstr(debugger.register_log[i].c_str());
+                        //if(add_underline) attroff(A_UNDERLINE | WA_TOP);
+                    }
+                } else {
+                    addstr("No regstring!");
+                }
+
+                // Code part
+                move((max_h/2), 0);
+                if(debugger.code_log.size() > 0){
+                    for(int i=0;
+                        i < std::min(debugger.code_log.size(),
+                                     static_cast<size_t>(((max_h-2)/2)-2));
+                        i++){
+                        move((max_h/2)+ i, 0);
+
+                        //bool add_underline = (((debugger.mem_watch/16)+i+1) % 4) == 0;
+
+                        //if(add_underline) attron(A_UNDERLINE | WA_TOP);
+                        addstr(debugger.code_log[i].c_str());
+                        //if(add_underline) attroff(A_UNDERLINE | WA_TOP);
+                    }
+                } else {
+                    addstr("No codestring!");
+                }
+
+
+
+                move(max_h-1, 0);
+                if(line.size() < max_w){
+                    addstr(line.c_str());
+                } else {
+                    addstr(line.substr(line.size() - max_w, max_w).c_str());
+                }
+
+                wrefresh(stdscr);
+                refresh_needed = false;
+            }
+        }
+    } else {
+        Debugger debugger;
+        debugger.debug = !ncurses;
+
+        debugger.debug = false;
+
+        chrono::steady_clock::time_point last_time;
+        last_time = chrono::steady_clock::now();
+
+        while(debugger.pIOW.is_running() || debugger.should_refresh()){
+            debugger.process_input();
+
+            if(chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - last_time).count() >= 500){
+                std::cout << "Overdue by: " << chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - last_time).count() << " ms \n";
+                last_time = chrono::steady_clock::now();
+
+                std::string text = "step\n";
+                debugger.Write(text);
+                debugger.refresh();
+
+
+                if (debugger.mem_log.size() > 0){
+
+                    for (const auto& str: debugger.mem_log)
+                        std::cout << str << std::endl;
+                } else {
+                    std::cout << "NO MEMSTRING!" << std::endl;
+                }
+            }
+        }
+    }
 }
