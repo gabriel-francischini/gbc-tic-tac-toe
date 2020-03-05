@@ -354,8 +354,9 @@ public:
                         then_part(line);
                 }
 
-                if(this->recording_log)
+                if(this->recording_log){
                     this->temp_log.push_back(std::string(line));
+                }
 
                 if(this->debug && !std::regex_search(line, std::regex(R"(^[0-9a-fA-F]+\:)"))){
                     std::cout << "number of chars: " << line.length()
@@ -378,13 +379,31 @@ public:
         }
     }
 
+    std::string at_addr(std::string hex_addr){
+        auto result = result_of("examine/1 $" + hex_addr + "\n",
+                                this->mem_regex_str);
+
+        if (result.size() < 1)
+            throw std::runtime_error("result_of examine returned <1 lines");
+
+        std::string s = result[0];
+
+        // Trims the '$' character (in place)
+        s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](int ch) {
+                    return !(ch == '$');
+                }));
+
+        return s.substr(6, 2);
+    }
+
     void refresh(){
-        register_log = result_of("registers\n");
+        register_log = result_of("registers\n", reg_regex_str);
         process_input();
 
         bool deb = this->debug;
         this->debug = false;
-        mem_log = result_of("examine/1024 " + std::to_string(this->mem_watch) + "\n");
+        mem_log = result_of("examine/1024 " + std::to_string(this->mem_watch) + "\n",
+                            this->mem_regex_str);
         process_input();
 
         this->debug = deb;
@@ -393,7 +412,7 @@ public:
         process_input();
     }
 
-    std::vector<std::string> result_of(const std::string& str){
+    std::vector<std::string> result_of(const std::string& str, const char* regex=""){
         do {
             process_input();
         } while(should_refresh());
@@ -412,7 +431,15 @@ public:
         if (temp_log.size() >= 1)
             temp_log.erase(temp_log.begin());
 
-        return temp_log;
+        std::vector<std::string> new_log;
+        std::regex new_regex(regex);
+
+        for(const std::string& line : temp_log){
+            if (std::regex_search(line, new_regex))
+                new_log.push_back(line);
+        }
+
+        return new_log;
     }
 
 
@@ -429,6 +456,12 @@ private:
     std::vector<RegexSignature> line_regexes;
     std::vector<std::string> temp_log;
     bool recording_log;
+
+    static constexpr const char*
+        mem_regex_str = R"(^[0-9a-f]{4}\: ([0-9a-f]{2}( )){0,15}[0-9a-f]{2}\s*$)";
+
+    static constexpr const char*
+        reg_regex_str = R"(^(AF|BC|DE|HL|SP|PC) = \$[0-9a-f]+)";
 
 
 public:
@@ -486,6 +519,7 @@ public:
 int main(void){
 
     constexpr bool ncurses = true;
+    constexpr int DELTA_T_ms = 2000;
 
     if (ncurses){
         Debugger debugger;
@@ -496,8 +530,25 @@ int main(void){
         std::string line = "";
         bool refresh_needed = true;
 
-        while(debugger.pIOW.is_running() || debugger.should_refresh()){
+        chrono::steady_clock::time_point last_time;
+        last_time = chrono::steady_clock::now();
+
+        std::vector<std::string> watch_addresses;
+
+        std::string last_line = "";
+
+        while(debugger.pIOW.is_running()
+              || debugger.should_refresh()
+              || (chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - last_time).count() >= DELTA_T_ms)
+              ){
             debugger.process_input();
+
+
+            // Adds autorefresh to the debugger
+            if(chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - last_time).count() >= DELTA_T_ms){
+                refresh_needed = true;
+                last_time = chrono::steady_clock::now();
+            }
 
             int ch = getch();
 
@@ -521,11 +572,39 @@ int main(void){
 
                 if(ch == KEY_BACKSPACE) line.pop_back();
                 if((ch == KEY_ENTER) || (ch == '\n')){
-                    if(line[0] != ':'){
+                    if (line.size() == 0)
+                        line = last_line;
+
+                    if((line.size() > 0) && (line[0] != ':')){
+                        if (line[0] != '\n')
+                            last_line = line;
+
                         line.push_back('\n');
                         debugger.Write(line);
+
                         line.clear();
                     } else {
+                        if((line.size() > 0)
+                           && ((line[1] == 'w') || (line[1] == 'W'))
+                           && (line.find(' ') != 0)){
+
+                            auto index = line.find(' ');
+                            auto len = std::min(static_cast<size_t>(4),
+                                                (line.size() - index));
+                            std::string hex_offset = line.substr(index+1, len);
+
+                            std::regex hexvalue(R"(^[0-9a-fA-F]+$)");
+
+                            if (std::regex_search(hex_offset, hexvalue))
+                                watch_addresses.push_back(hex_offset);
+                        } else if((line.size() > 0)
+                                  && ((line[1] == 'r') || (line[1] == 'R'))){
+
+                            // see: https://stackoverflow.com/questions/2166099/calling-a-constructor-to-re-initialize-object
+                            debugger.~Debugger();
+                            new(&debugger) Debugger();
+                        }
+
                         line.clear();
                     }
                 }
@@ -629,7 +708,14 @@ int main(void){
                     addstr("No codestring!");
                 }
 
+                // Watched memory part
+                move((max_h/2), (max_w/2)+1);
+                for(int i = 0; i < watch_addresses.size(); i++){
+                    move((max_h/2) + i, (max_w/2)+1);
+                    addstr((watch_addresses[i] + ": ").c_str());
 
+                    addstr(debugger.at_addr(watch_addresses[i]).c_str());
+                }
 
                 move(max_h-1, 0);
                 if(line.size() < max_w){
@@ -654,7 +740,7 @@ int main(void){
         while(debugger.pIOW.is_running() || debugger.should_refresh()){
             debugger.process_input();
 
-            if(chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - last_time).count() >= 500){
+            if(chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - last_time).count() >= DELTA_T_ms){
                 std::cout << "Overdue by: " << chrono::duration_cast<chrono::milliseconds>(chrono::steady_clock::now() - last_time).count() << " ms \n";
                 last_time = chrono::steady_clock::now();
 
