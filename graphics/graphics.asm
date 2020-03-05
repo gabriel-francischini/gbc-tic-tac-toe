@@ -143,8 +143,10 @@ InitializeTileAddrArray:
 
 ; `(u16_bc) AddrTile* TileAddr::BinarySearch(u16_bc Key)`
 ;
-; Finds the address corresponding to Key in the TileAddrArray.
+; Finds the address corresponding to Key in the TileAddrArray. Key is a adress
+; to a tile in ROM.
 ; - Destroys: `de`, `hl`
+; - Returns: `hl` is the address to Key, Carry is set if found Key else resetted
 TileAddr_BinarySearch:
                 ld      d, 0                        ; Lower bound index
                 ld      a, [TileAddrArray.length]   ; Higher bound index
@@ -157,8 +159,19 @@ TileAddr_BinarySearch:
                 xor     a
                 add     d
                 add     e
-                sra     a
+                rra
 
+;       Our guess is valid if it isn't equal to our Lower Bound or...
+                cp      d
+                jr      nz, .ValidGuess
+;       ... or it isn't equal to our Higher Bound.
+                cp      e
+                jr      nz, .ValidGuess
+;       If both our Guess, Lower Bound and Higher Bound are the same number, it
+;       means we exhausted we array without finding it.
+                jr      .GuessNotFound
+
+.ValidGuess:
 ;           We will use this guess to adjust our lower/higher bound afterwards
                 ldh     [GuessIndex], a
                 push    de
@@ -166,7 +179,7 @@ TileAddr_BinarySearch:
 ;       We'll use HL to calculate the effective address of the median index
 ;       between virtual indexes D and E (which is currently held in A)
                 ld      h, TileAddrArray >> 8
-                xor     l
+                ld      l, $00                      ; TileAddrArray is fix addr
 
 ;       Converts the virtual index at A to a real index by considering the
 ;       spacing between consecutive elements in the real array. So, for example,
@@ -174,17 +187,39 @@ TileAddr_BinarySearch:
 ;       are actually 2**6 (= 64) indexes apart when mapped into the REAL array.
 ;       Finally, the REAL index has to be mapped into an effective address.
 ;
-;           u8 a = a << d;
+;           u8_l rIndex = (u8_a) vIndex * (1 << (u8_d) SPACING);
+;       Afterwards we will do:
+;           u8_a rIndex = vIndex + ((1 << SPACING) - 1);
+;       Because the vIndex 0 is not at the bottom of the real array because we
+;       need space to grow downwards as the array expands. This sum, however,
+;       can overflow so we'll do it later.
                 ld      a, [TileAddrArray.spacing]
                 ld      d, a
                 ldh     a, [GuessIndex]
 .doSpacing:     sla     a
                 dec     d
                 jr      nz, .doSpacing
+                ld      l, a                        ; Saves the a<<d 4 later
+
+;           u8 a = (1 << (u8_d) SPACING) - 1;
+                ld      a, [TileAddrArray.spacing]
+                ld      d, a
+                ld      a, 1
+.doSpacingAgain:sla     a
+                dec     d
+                jr      nz, .doSpacingAgain
+                dec     a
 
 ;       This is:
-;           u16 hl = hl + 3 * a;
-                ld      d, a
+;           u16 hl = hl + 3 * (a + (u8_e) (SPACING - 1));
+;       This calculates the effective address and saves it in HL
+;       The 3 is because each AddrTile is 3 bytes big, and the extra (+SPACING)
+;       is because the vIndex 0 is not at the bottom of the real array because
+;       we need space to grow downwards as the array expands.
+                add     l
+                jr      nc, .noCarryAtSpace
+                inc     h
+.noCarryAtSpace:ld      d, a
                 add     d
                 jr      nc, .noCarryAt2X
                 inc     h
@@ -193,6 +228,57 @@ TileAddr_BinarySearch:
                 inc     h
 .noCarryAt3X:   ld      l, a
 
+;       Now with the effective address in HL, we should compare it with the
+;       value we are searching.
+                ld      a, [hli]
+                ld      d, a
+                ld      a, [hld]
+                ld      e, a
+
+;       [Guess] is in DE and Key is in BC, we just need to compare the two in
+;       order to now if ours [Guess Index] is ==, > or < than our Key.
+                ld      a, b
+                cp      d
+
+                jr      z, .BEqualsD
+                jr      c, .BLessThanD
+                jr      nc,.BGreaterThanD
+
+.BEqualsD:      jr      .FoundGuess
+.BLessThanD:    jr      .GuessTooBig
+.BGreaterThanD: jr      .GuessTooSmall
+
+.GuessTooSmall:
+                pop     de
+                ldh     a, [GuessIndex]
+
+;       Wait, if we just searched the Lower Bound
+;       and then we shouldn't write the Lower
+;       Bound to itself and keep searching the
+;       same number ever. We should increase the
+;       Lower Bound instead
+                cp      d
+                jr      nz, .GuessNotLowerBound
+                inc     a
+.GuessNotLowerBound:
+                ld      d, a
+                jr      .ComputeGuess
+
+.GuessTooBig:
+                pop     de
+                ldh     a, [GuessIndex]
+                ld      e, a
+                jr      .ComputeGuess
+
+
+.GuessNotFound:
+                scf
+                ccf
+                ret
+.FoundGuess:
+                pop     de
+                scf
+                ret
 
 ; End of the guard clause.
 endc ; __graphics_asm__
